@@ -1,8 +1,8 @@
 # kdenlive-api
 
-DaVinci Resolve-compatible Python scripting API for [Kdenlive](https://kdenlive.org/) via D-Bus.
+DaVinci Resolve-compatible Python scripting API for Kdenlive via D-Bus.
 
-Scripts written for the Resolve API work with minimal changes. The library communicates with a modified Kdenlive build that exposes `Q_SCRIPTABLE` methods over D-Bus (`org.kde.kdenlive.scripting`).
+Scripts written for the Resolve API work with minimal changes. The library communicates with a [modified Kdenlive build](https://github.com/D-Ogi/kdenlive) that exposes `Q_SCRIPTABLE` methods over D-Bus (`org.kde.kdenlive.scripting`).
 
 ## Quick start
 
@@ -53,7 +53,7 @@ All class and method names follow the DaVinci Resolve Scripting API naming conve
 
 - Python 3.10+
 - Linux (D-Bus transport requires `pydbus` and `PyGObject`)
-- Kdenlive with D-Bus scripting support (modified build)
+- [Modified Kdenlive build](https://github.com/D-Ogi/kdenlive) with D-Bus scripting support
 
 ## Docs
 
