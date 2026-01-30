@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Project outputs (large generated files)
+output/
+img/scenes/
+img/master/
+
+# Reference repos (submodules or external)
+reference/
+
+# ComfyUI workflows (large JSON)
+workflows/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Pytest
+.pytest_cache/
