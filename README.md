@@ -58,7 +58,6 @@ All class and method names follow the DaVinci Resolve Scripting API naming conve
 ## Docs
 
 - [API reference](docs/kdenlive-api.md) — full class/method documentation
-- [Agent brief](docs/kdenlive-api-agent-brief.md) — project goals, user stories, architecture overview
 - [MoSCoW priorities](docs/mcp-kdenlive-moscow.md) — feature prioritization
 
 ## Tests
