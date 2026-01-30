@@ -1,10 +1,11 @@
 """Constants for kdenlive_api."""
 
 # D-Bus identifiers
-DBUS_SERVICE = "org.kde.kdenlive"
+DBUS_SERVICE_PREFIX = "org.kde.kdenlive"
+DBUS_SERVICE = "org.kde.kdenlive"  # Will be resolved to org.kde.kdenlive-{PID} at runtime
 DBUS_PATH = "/MainWindow"
-DBUS_IFACE_SCRIPTING = "org.kde.kdenlive.scripting"
-DBUS_IFACE_RENDERING = "org.kde.kdenlive.rendering"
+DBUS_IFACE_SCRIPTING = "org.kde.kdenlive.MainWindow"
+DBUS_IFACE_RENDERING = "org.kde.kdenlive.MainWindow"
 
 # Track types (Resolve uses these strings)
 TRACK_VIDEO = "video"

@@ -60,10 +60,9 @@ def build_timeline(
 
     # ── Parse script for scene metadata ────────────────────────────────
     if script_path is None:
-        script_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "script-scenes.md",
-        )
+        # kdenlive-api/scripts/ → repo root → mv/script-scenes.md
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        script_path = os.path.join(repo_root, "mv", "script-scenes.md")
     scenes_meta = parse_script_scenes(script_path) if os.path.exists(script_path) else []
 
     # ── Collect scene video files ──────────────────────────────────────
@@ -204,8 +203,8 @@ def main():
     parser.add_argument(
         "--video-dir",
         default=os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "output", "video",
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "mv", "output", "video",
         ),
         help="Directory containing scene MP4 files",
     )

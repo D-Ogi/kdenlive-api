@@ -73,6 +73,14 @@ class Project:
         h = self._dbus.get_project_resolution_height()
         return (w, h)
 
+    def GetResolutionWidth(self) -> int:
+        """Return the project width in pixels."""
+        return self._dbus.get_project_resolution_width()
+
+    def GetResolutionHeight(self) -> int:
+        """Return the project height in pixels."""
+        return self._dbus.get_project_resolution_height()
+
     # ── Save ───────────────────────────────────────────────────────────
 
     def Save(self) -> bool:

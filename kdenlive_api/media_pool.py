@@ -154,6 +154,20 @@ class MediaPoolItem:
             del self._markers[f]
         return len(to_delete) > 0
 
+    # ── Scene Detection ─────────────────────────────────────────────────
+
+    def DetectScenes(self, threshold: float = 0.4, min_duration: int = 0) -> list[float]:
+        """Detect scene cuts in this clip using FFmpeg scene detection.
+
+        Args:
+            threshold: Sensitivity 0.0-1.0 (lower = more cuts detected). Default 0.4.
+            min_duration: Minimum frames between detected cuts. Default 0 (no minimum).
+
+        Returns:
+            List of timestamps (seconds) where scene cuts were detected.
+        """
+        return self._dbus.detect_scenes(self._bin_id, threshold, min_duration)
+
     # ── Resolve Fusion stubs ───────────────────────────────────────────
 
     def GetFusionCompCount(self) -> int:
@@ -279,6 +293,15 @@ class MediaPool:
         if not files:
             return []
         return self.ImportMedia(files, folder)
+
+    def CreateTitleClip(self, title_xml: str, duration: int,
+                        name: str = "Title clip",
+                        folder_id: str = "-1") -> MediaPoolItem | None:
+        """Create a kdenlivetitle clip. Returns MediaPoolItem or None."""
+        bin_id = self._dbus.create_title_clip(title_xml, duration, name, folder_id)
+        if bin_id and bin_id != "-1":
+            return MediaPoolItem(self._dbus, bin_id)
+        return None
 
     def GetAllClips(self) -> list[MediaPoolItem]:
         """Return all clips in the bin."""
