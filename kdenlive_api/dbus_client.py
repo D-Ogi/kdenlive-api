@@ -38,16 +38,33 @@ def _get_dbus_backend():
 
 
 def _find_dbus_tool(name: str) -> str | None:
-    """Find a D-Bus CLI tool (dbus-send, gdbus, qdbus) in CraftRoot or PATH."""
+    """Find a D-Bus CLI tool (dbus-send, gdbus, qdbus) via env var or PATH.
+
+    Lookup order:
+        1. DBUS_TOOLS_DIR env var (directory containing D-Bus executables)
+        2. CRAFT_ROOT env var (KDE Craft on Windows, checks CRAFT_ROOT/bin/)
+        3. PATH via shutil.which()
+    """
     import os
     import shutil
-    craft_root = os.environ.get("CRAFT_ROOT", r"C:\CraftRoot")
-    craft_path = os.path.join(craft_root, "bin", f"{name}.exe")
-    if os.path.isfile(craft_path):
-        return craft_path
-    craft_path2 = os.path.join(craft_root, "bin", name)
-    if os.path.isfile(craft_path2):
-        return craft_path2
+
+    # 1. Explicit DBUS_TOOLS_DIR env var
+    tools_dir = os.environ.get("DBUS_TOOLS_DIR")
+    if tools_dir:
+        for suffix in (f"{name}.exe", name):
+            candidate = os.path.join(tools_dir, suffix)
+            if os.path.isfile(candidate):
+                return candidate
+
+    # 2. CRAFT_ROOT env var (KDE Craft on Windows)
+    craft_root = os.environ.get("CRAFT_ROOT")
+    if craft_root:
+        for suffix in (f"{name}.exe", name):
+            candidate = os.path.join(craft_root, "bin", suffix)
+            if os.path.isfile(candidate):
+                return candidate
+
+    # 3. Fall back to PATH
     return shutil.which(name)
 
 

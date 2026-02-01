@@ -2,7 +2,7 @@
 """Replace a single scene in the timeline with a new video file.
 
 Usage:
-    python scripts/replace_scene.py --scene 5 --file output/video/scene05-B-seed3.mp4
+    python scripts/replace_scene.py --scene 5 --file path/to/scene05-B-seed3.mp4
 """
 
 from __future__ import annotations
@@ -73,7 +73,8 @@ def replace_scene(scene_number: int, new_file: str, track_idx: int = 0):
 
 def main():
     parser = argparse.ArgumentParser(description="Replace a scene in Kdenlive timeline")
-    parser.add_argument("--scene", type=int, required=True, help="Scene number (1-38)")
+    parser.add_argument("--scene", type=int, required=True,
+                        help="Scene number (1-based)")
     parser.add_argument("--file", required=True, help="Path to new video file")
     parser.add_argument("--track", type=int, default=0, help="Video track index (0-based)")
     args = parser.parse_args()
