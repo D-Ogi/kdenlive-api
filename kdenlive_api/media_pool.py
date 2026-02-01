@@ -20,7 +20,6 @@ class MediaPoolItem:
         self._dbus = dbus
         self._bin_id = bin_id
         self._properties: dict | None = None
-        self._markers: dict[int, dict] = {}  # frame → {color, name, note, duration, customData}
 
     @property
     def bin_id(self) -> str:
@@ -76,7 +75,7 @@ class MediaPoolItem:
     def AddMarker(self, frame_id: int, color: str, name: str,
                   note: str = "", duration: int = 1,
                   custom_data: str = "") -> bool:
-        """Add a marker to this clip.
+        """Add a marker to this clip via D-Bus.
 
         Args:
             frame_id: Frame number (relative to clip start).
@@ -89,21 +88,9 @@ class MediaPoolItem:
         Returns:
             True on success.
         """
-        self._markers[frame_id] = {
-            "color": color,
-            "name": name,
-            "note": note,
-            "duration": duration,
-            "customData": custom_data,
-        }
-        # Also try to set via D-Bus guide (timeline-level marker)
         category = MARKER_COLOR_MAP.get(color, 0)
         comment = name if not note else f"{name}: {note}" if name else note
-        try:
-            self._dbus.add_guide(frame_id, comment, category)
-        except Exception:
-            pass  # Clip markers stored in-memory as fallback
-        return True
+        return self._dbus.add_clip_marker(self._bin_id, frame_id, comment, category)
 
     def GetMarkers(self) -> dict[int, dict]:
         """Return all markers on this clip.
@@ -111,48 +98,58 @@ class MediaPoolItem:
         Returns:
             Dict mapping frame_id → {color, duration, note, name, customData}.
         """
-        return dict(self._markers)
+        raw = self._dbus.get_clip_markers(self._bin_id)
+        result: dict[int, dict] = {}
+        for m in raw:
+            frame = int(m.get("frame", 0))
+            cat = int(m.get("category", 0))
+            comment = m.get("comment", "")
+            color = MARKER_CATEGORY_TO_COLOR.get(cat, "Purple")
+            result[frame] = {
+                "color": color,
+                "name": comment,
+                "note": "",
+                "duration": 1,
+                "customData": "",
+            }
+        return result
 
     def GetMarkerByCustomData(self, custom_data: str) -> dict:
-        """Return the marker matching the given custom data."""
-        for frame_id, marker in self._markers.items():
-            if marker.get("customData") == custom_data:
-                result = dict(marker)
-                result["frameId"] = frame_id
-                return result
+        """Return the marker matching the given custom data.
+
+        Note: custom data is not persisted via D-Bus clip markers.
+        """
         return {}
 
     def UpdateMarkerCustomData(self, frame_id: int, custom_data: str) -> bool:
-        """Update the custom data of a marker at the given frame."""
-        if frame_id in self._markers:
-            self._markers[frame_id]["customData"] = custom_data
-            return True
+        """Update the custom data of a marker at the given frame.
+
+        Note: custom data is not persisted via D-Bus clip markers.
+        """
         return False
 
     def GetMarkerCustomData(self, frame_id: int) -> str:
-        """Return the custom data string for a marker at the given frame."""
-        marker = self._markers.get(frame_id)
-        return marker.get("customData", "") if marker else ""
+        """Return the custom data string for a marker at the given frame.
+
+        Note: custom data is not persisted via D-Bus clip markers.
+        """
+        return ""
 
     def DeleteMarkerAtFrame(self, frame_id: int) -> bool:
         """Delete the marker at the given frame."""
-        return self._markers.pop(frame_id, None) is not None
+        return self._dbus.delete_clip_marker(self._bin_id, frame_id)
 
     def DeleteMarkersByColor(self, color: str) -> bool:
         """Delete all markers of the given color."""
-        to_delete = [f for f, m in self._markers.items()
-                     if m.get("color") == color]
-        for f in to_delete:
-            del self._markers[f]
-        return len(to_delete) > 0
+        category = MARKER_COLOR_MAP.get(color, 0)
+        return self._dbus.delete_clip_markers_by_category(self._bin_id, category)
 
     def DeleteMarkerByCustomData(self, custom_data: str) -> bool:
-        """Delete the marker matching the given custom data."""
-        to_delete = [f for f, m in self._markers.items()
-                     if m.get("customData") == custom_data]
-        for f in to_delete:
-            del self._markers[f]
-        return len(to_delete) > 0
+        """Delete the marker matching the given custom data.
+
+        Note: custom data is not persisted via D-Bus clip markers.
+        """
+        return False
 
     # ── Scene Detection ─────────────────────────────────────────────────
 

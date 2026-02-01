@@ -43,32 +43,64 @@ def frames_to_seconds(frames: int, fps: float = 25.0) -> float:
     return frames / fps
 
 
-def parse_script_scenes(script_path: str) -> list[dict]:
-    """Parse script-scenes.md to extract scene metadata.
+def parse_script_scenes(
+    script_path: str,
+    heading_pattern: str = r"^###\s+Scene\s+(\d+)\s*[—–-]\s*(.+)$",
+    field_map: dict[str, str] | None = None,
+) -> list[dict]:
+    """Parse a structured scene markdown file to extract scene metadata.
 
-    Returns a list of dicts with keys:
-        - number: int (scene number, 1-based)
-        - title: str (scene title from ### header)
-        - section: str (e.g. "INTRO", "VERSE 1", "DROP")
-        - kadr: str (framing description)
-        - poza: str (pose description)
-        - nastroj: str (mood)
-        - ambient: str (ambient motion description)
-        - kamera: str (camera description)
+    Expected markdown format::
+
+        ## Section Name
+        ### Scene 1 --- Title
+        **framing:** description
+        **pose:** description
+        **mood:** description
+        **ambient motion:** description
+        **camera:** description
+
+    Args:
+        script_path: Path to the markdown file.
+        heading_pattern: Regex for scene headings. Must have two capture groups:
+            group(1) = scene number, group(2) = scene title.
+            Default matches ``### Scene 1 --- Title``.
+        field_map: Optional mapping from markdown field names (lowercase) to
+            output dict keys. Defaults to English field names:
+            framing, pose, mood, ambient, camera.
+
+    Returns:
+        A list of dicts with keys:
+            - number: int (scene number, 1-based)
+            - title: str (scene title from heading)
+            - section: str (e.g. "INTRO", "VERSE 1", "DROP")
+            - framing: str (framing description)
+            - pose: str (pose description)
+            - mood: str (mood)
+            - ambient: str (ambient motion description)
+            - camera: str (camera description)
     """
+    if field_map is None:
+        field_map = {
+            "framing": "framing",
+            "pose": "pose",
+            "mood": "mood",
+            "ambient motion": "ambient",
+            "camera": "camera",
+        }
+
     with open(script_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    scenes = []
+    scenes: list[dict] = []
     current_section = ""
 
-    # Split by scene headers
     lines = content.split("\n")
-    scene_re = re.compile(r"^###\s+Scena\s+(\d+)\s*[—–-]\s*(.+)$")
+    scene_re = re.compile(heading_pattern)
     section_re = re.compile(r"^##\s+(.+?)(?:\s*[—–-]|$)")
     field_re = re.compile(r"^\*\*(.+?):\*\*\s*(.+)$")
 
-    current_scene = None
+    current_scene: dict | None = None
     for line in lines:
         line = line.strip()
 
@@ -87,11 +119,11 @@ def parse_script_scenes(script_path: str) -> list[dict]:
                 "number": int(m.group(1)),
                 "title": m.group(2).strip(),
                 "section": current_section,
-                "kadr": "",
-                "poza": "",
-                "nastroj": "",
+                "framing": "",
+                "pose": "",
+                "mood": "",
                 "ambient": "",
-                "kamera": "",
+                "camera": "",
             }
             continue
 
@@ -101,16 +133,9 @@ def parse_script_scenes(script_path: str) -> list[dict]:
             if m:
                 key = m.group(1).lower().strip()
                 value = m.group(2).strip()
-                if key == "kadr":
-                    current_scene["kadr"] = value
-                elif key == "poza":
-                    current_scene["poza"] = value
-                elif key in ("nastrój", "nastroj"):
-                    current_scene["nastroj"] = value
-                elif key == "ambient motion":
-                    current_scene["ambient"] = value
-                elif key == "kamera":
-                    current_scene["kamera"] = value
+                mapped = field_map.get(key)
+                if mapped and mapped in current_scene:
+                    current_scene[mapped] = value
 
     if current_scene:
         scenes.append(current_scene)
@@ -131,12 +156,18 @@ def find_scene_video(output_dir: str, scene_number: int,
     return matches[0] if matches else None
 
 
-def collect_scene_videos(output_dir: str, num_scenes: int = 38,
+def collect_scene_videos(output_dir: str, num_scenes: int,
                          variant: str = "A") -> list[str | None]:
     """Collect video file paths for all scenes.
 
-    Returns a list of length num_scenes where each element is either
-    a file path or None if not found.
+    Args:
+        output_dir: Directory containing scene video files.
+        num_scenes: Total number of scenes to look for (required).
+        variant: Scene variant identifier (default: "A").
+
+    Returns:
+        A list of length num_scenes where each element is either
+        a file path or None if not found.
     """
     return [find_scene_video(output_dir, i + 1, variant)
             for i in range(num_scenes)]

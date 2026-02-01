@@ -76,8 +76,8 @@ def test_project_set_current_timeline(resolve):
 def test_project_get_setting_resolve_keys(resolve):
     proj = resolve.GetProjectManager().GetCurrentProject()
     assert proj.GetSetting("timelineFrameRate") == "25.0"
-    assert proj.GetSetting("timelineResolutionWidth") == "1536"
-    assert proj.GetSetting("timelineResolutionHeight") == "864"
+    assert proj.GetSetting("timelineResolutionWidth") == "1920"
+    assert proj.GetSetting("timelineResolutionHeight") == "1080"
 
 
 def test_project_render_stubs(resolve):

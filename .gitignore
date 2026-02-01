@@ -7,17 +7,6 @@ build/
 .venv/
 venv/
 
-# Project outputs (large generated files)
-output/
-img/scenes/
-img/master/
-
-# Reference repos (submodules or external)
-reference/
-
-# ComfyUI workflows (large JSON)
-workflows/
-
 # IDE
 .idea/
 .vscode/

@@ -38,16 +38,33 @@ def _get_dbus_backend():
 
 
 def _find_dbus_tool(name: str) -> str | None:
-    """Find a D-Bus CLI tool (dbus-send, gdbus, qdbus) in CraftRoot or PATH."""
+    """Find a D-Bus CLI tool (dbus-send, gdbus, qdbus) via env var or PATH.
+
+    Lookup order:
+        1. DBUS_TOOLS_DIR env var (directory containing D-Bus executables)
+        2. CRAFT_ROOT env var (KDE Craft on Windows, checks CRAFT_ROOT/bin/)
+        3. PATH via shutil.which()
+    """
     import os
     import shutil
-    craft_root = os.environ.get("CRAFT_ROOT", r"C:\CraftRoot")
-    craft_path = os.path.join(craft_root, "bin", f"{name}.exe")
-    if os.path.isfile(craft_path):
-        return craft_path
-    craft_path2 = os.path.join(craft_root, "bin", name)
-    if os.path.isfile(craft_path2):
-        return craft_path2
+
+    # 1. Explicit DBUS_TOOLS_DIR env var
+    tools_dir = os.environ.get("DBUS_TOOLS_DIR")
+    if tools_dir:
+        for suffix in (f"{name}.exe", name):
+            candidate = os.path.join(tools_dir, suffix)
+            if os.path.isfile(candidate):
+                return candidate
+
+    # 2. CRAFT_ROOT env var (KDE Craft on Windows)
+    craft_root = os.environ.get("CRAFT_ROOT")
+    if craft_root:
+        for suffix in (f"{name}.exe", name):
+            candidate = os.path.join(craft_root, "bin", suffix)
+            if os.path.isfile(candidate):
+                return candidate
+
+    # 3. Fall back to PATH
     return shutil.which(name)
 
 
@@ -58,6 +75,25 @@ class KdenliveDBus:
     patched Kdenlive build. On Linux uses pydbus; falls back to
     subprocess calls to qdbus/gdbus on other platforms.
     """
+
+    @staticmethod
+    def _result_to_dict(result) -> dict:
+        """Convert a D-Bus result to a Python dict.
+
+        Handles both native dicts (pydbus) and list-of-tuples
+        (subprocess parser).
+        """
+        if isinstance(result, dict):
+            return dict(result)
+        if isinstance(result, list):
+            d = {}
+            for item in result:
+                if isinstance(item, tuple) and len(item) == 2:
+                    d[item[0]] = item[1]
+                elif isinstance(item, dict):
+                    d.update(item)
+            return d
+        return {}
 
     def __init__(self):
         self._backend = _get_dbus_backend()
@@ -142,17 +178,21 @@ class KdenliveDBus:
             elif isinstance(a, float):
                 cmd_dbus_send.append(f"double:{a}")
             elif isinstance(a, (list, tuple)):
-                # dbus-send array syntax: array:string:"v1","v2","v3"
+                # dbus-send array syntax: array:<type>:v1,v2,v3
                 if len(a) == 0:
                     cmd_dbus_send.append("array:string:")
+                elif all(isinstance(item, int) and not isinstance(item, bool) for item in a):
+                    items = ",".join(str(item) for item in a)
+                    cmd_dbus_send.append(f"array:int32:{items}")
                 else:
-                    items = ",".join(f'"{item}"' for item in a)
+                    items = ",".join(str(item) for item in a)
                     cmd_dbus_send.append(f"array:string:{items}")
             else:
                 cmd_dbus_send.append(f"string:{a}")
         try:
             result = subprocess.run(cmd_dbus_send, capture_output=True,
-                                    text=True, timeout=30, check=True)
+                                    text=True, encoding="utf-8",
+                                    timeout=30, check=True)
             return self._parse_dbus_send_output(result.stdout.strip())
         except (FileNotFoundError, subprocess.CalledProcessError):
             pass
@@ -169,7 +209,7 @@ class KdenliveDBus:
                 cmd.append(str(a))
         try:
             result = subprocess.run(cmd, capture_output=True, text=True,
-                                    timeout=30, check=True)
+                                    encoding="utf-8", timeout=30, check=True)
             return result.stdout.strip()
         except FileNotFoundError:
             pass
@@ -185,7 +225,7 @@ class KdenliveDBus:
         for a in args:
             cmd_gdbus.append(str(a))
         result = subprocess.run(cmd_gdbus, capture_output=True, text=True,
-                                timeout=30, check=True)
+                                encoding="utf-8", timeout=30, check=True)
         return result.stdout.strip()
 
     @staticmethod
@@ -346,6 +386,34 @@ class KdenliveDBus:
     def set_project_property(self, key: str, value: str) -> bool:
         return bool(self._call("scriptSetProjectProperty", key, value))
 
+    # ── Undo / Redo ──────────────────────────────────────────────────
+
+    def undo(self, steps: int = 1) -> bool:
+        """Undo the last N operations. Returns True if at least one was undone."""
+        result = self._call("scriptUndo", steps)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def redo(self, steps: int = 1) -> bool:
+        """Redo the last N undone operations. Returns True if at least one was redone."""
+        result = self._call("scriptRedo", steps)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def undo_status(self) -> dict:
+        """Get undo/redo status: can_undo, can_redo, undo_text, redo_text, index, count."""
+        result = self._call("scriptUndoStatus")
+        if not isinstance(result, str) or not result:
+            return {}
+        d = {}
+        for pair in result.split(";"):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                d[k] = v
+        return d
+
     # ── Media Pool (Bin) ───────────────────────────────────────────────
 
     def import_media(self, file_paths: list[str], folder_id: str = "-1") -> list[str]:
@@ -384,19 +452,32 @@ class KdenliveDBus:
         return list(result) if result else []
 
     def get_clip_properties(self, bin_id: str) -> dict:
-        """Get clip properties.
-
-        WARNING: scriptGetClipProperties causes a deadlock in Kdenlive
-        if the clip is still loading (thumbnails/metadata). Returns
-        minimal info without calling D-Bus when possible.
-        """
-        # UNSAFE — causes permanent freeze / deadlock in Kdenlive.
-        # Return empty dict; callers should use get_all_clip_ids() and
-        # track filenames externally.
-        return {"id": bin_id}
+        """Get clip properties from the bin (name, duration, type, url)."""
+        try:
+            result = self._call("scriptGetClipProperties", bin_id)
+            if isinstance(result, dict):
+                return result
+            if isinstance(result, list):
+                d = {}
+                for item in result:
+                    if isinstance(item, tuple) and len(item) == 2:
+                        d[item[0]] = item[1]
+                    elif isinstance(item, dict):
+                        d.update(item)
+                return d if d else {"id": bin_id}
+            return {"id": bin_id}
+        except Exception:
+            return {"id": bin_id}
 
     def delete_bin_clip(self, bin_id: str) -> bool:
         return bool(self._call("scriptDeleteBinClip", bin_id))
+
+    def relink_bin_clip(self, bin_id: str, new_file_path: str) -> bool:
+        """Relink a bin clip to a new file. Preserves all timeline instances."""
+        result = self._call("scriptRelinkBinClip", bin_id, new_file_path)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
 
     def create_title_clip(self, title_xml: str, duration_frames: int,
                           clip_name: str = "Title clip",
@@ -405,6 +486,18 @@ class KdenliveDBus:
         result = self._call("scriptCreateTitleClip",
                             title_xml, duration_frames, clip_name, folder_id)
         return str(result) if result else "-1"
+
+    def get_title_xml(self, bin_id: str) -> str:
+        """Get the XML content of a title clip. Returns empty string if not found."""
+        result = self._call("scriptGetTitleXml", bin_id)
+        return str(result) if result else ""
+
+    def set_title_xml(self, bin_id: str, new_xml: str) -> bool:
+        """Set the XML content of a title clip and reload. Returns True on success."""
+        result = self._call("scriptSetTitleXml", bin_id, new_xml)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
 
     # ── Timeline ───────────────────────────────────────────────────────
 
@@ -449,11 +542,11 @@ class KdenliveDBus:
                                    start_position: int) -> list[int]:
         valid = self._get_valid_track_ids()
         if valid and track_id not in valid:
-            return []  # Non-existent track
+            raise ValueError(f"Invalid track_id {track_id}. Valid: {sorted(valid)}")
         result = self._call("scriptInsertClipsSequentially",
                             bin_clip_ids, track_id, start_position)
         if isinstance(result, list):
-            return [int(x) for x in result if x]
+            return [int(x) for x in result if x is not None]
         if isinstance(result, str) and result:
             return [int(x) for x in result.split("\n") if x]
         return []
@@ -504,20 +597,26 @@ class KdenliveDBus:
 
     def get_timeline_clip_info(self, clip_id: int) -> dict:
         result = self._call("scriptGetTimelineClipInfo", clip_id)
-        if isinstance(result, dict):
-            return result
-        if isinstance(result, list):
-            d = {}
-            for item in result:
-                if isinstance(item, tuple) and len(item) == 2:
-                    d[item[0]] = item[1]
-                elif isinstance(item, dict):
-                    d.update(item)
-            return d
-        return {}
+        return self._result_to_dict(result)
 
     def cut_clip(self, clip_id: int, position: int) -> bool:
         return bool(self._call("scriptCutClip", clip_id, position))
+
+    def slip_clip(self, clip_id: int, offset: int) -> bool:
+        """Slip a clip's source in/out points by offset frames.
+
+        Positive offset moves the source window forward (later in source).
+        Negative offset moves it backward (earlier in source).
+        Timeline position and duration remain unchanged.
+
+        Args:
+            clip_id: Timeline clip ID.
+            offset: Number of frames to slip.
+        """
+        result = self._call("scriptSlipClip", clip_id, offset)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
 
     # ── Transitions & Mixes ────────────────────────────────────────────
 
@@ -532,6 +631,34 @@ class KdenliveDBus:
 
     def remove_mix(self, clip_id: int) -> bool:
         return bool(self._call("scriptRemoveMix", clip_id))
+
+    # ── Compositions ──────────────────────────────────────────────────
+
+    def get_compositions(self) -> list[dict]:
+        result = self._call("scriptGetCompositions")
+        if isinstance(result, list):
+            return [dict(c) for c in result] if result else []
+        return []
+
+    def get_composition_info(self, compo_id: int) -> dict:
+        result = self._call("scriptGetCompositionInfo", compo_id)
+        return self._result_to_dict(result)
+
+    def move_composition(self, compo_id: int, track_id: int, position: int) -> bool:
+        return bool(self._call("scriptMoveComposition", compo_id, track_id, position))
+
+    def resize_composition(self, compo_id: int, new_duration: int, from_right: bool = True) -> int:
+        result = self._call("scriptResizeComposition", compo_id, new_duration, from_right)
+        return int(result) if isinstance(result, str) else result
+
+    def delete_composition(self, compo_id: int) -> bool:
+        return bool(self._call("scriptDeleteComposition", compo_id))
+
+    def get_composition_types(self) -> list[dict]:
+        result = self._call("scriptGetCompositionTypes")
+        if isinstance(result, list):
+            return [dict(t) for t in result] if result else []
+        return []
 
     # ── Effects ────────────────────────────────────────────────────────
 
@@ -552,12 +679,129 @@ class KdenliveDBus:
         result = self._call("scriptGetClipEffects", clip_id)
         return result if isinstance(result, str) else ""
 
+    # ── Effect Keyframes ──────────────────────────────────────────────
+
+    def get_effect_keyframes(self, clip_id: int,
+                             effect_index: int) -> list[dict]:
+        """Get all keyframes for an effect on a timeline clip.
+
+        Args:
+            clip_id: Timeline clip ID.
+            effect_index: 0-based index of the effect in the clip's effect stack.
+
+        Returns list of dicts with keys: frame, type, value.
+        """
+        result = self._call("scriptGetEffectKeyframes", clip_id, effect_index)
+        if isinstance(result, list):
+            out = []
+            for item in result:
+                if isinstance(item, dict):
+                    out.append(item)
+                elif isinstance(item, list):
+                    d = {}
+                    for pair in item:
+                        if isinstance(pair, tuple) and len(pair) == 2:
+                            d[pair[0]] = pair[1]
+                    if d:
+                        out.append(d)
+            return out
+        return []
+
+    def add_effect_keyframe(self, clip_id: int, effect_index: int,
+                            frame: int, value: float = 0.0,
+                            keyframe_type: int = -1) -> bool:
+        """Add a keyframe to an effect.
+
+        Args:
+            clip_id: Timeline clip ID.
+            effect_index: 0-based effect index in the stack.
+            frame: Frame position (relative to clip start).
+            value: Normalized value 0.0–1.0.
+            keyframe_type: KeyframeType enum (-1 = use value-based add,
+                0=linear, 1=discrete, 2=smooth, 3=smooth_natural, ...).
+        """
+        result = self._call("scriptAddEffectKeyframe", clip_id, effect_index,
+                            frame, value, keyframe_type)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def remove_effect_keyframe(self, clip_id: int, effect_index: int,
+                               frame: int) -> bool:
+        """Remove a keyframe from an effect.
+
+        Args:
+            clip_id: Timeline clip ID.
+            effect_index: 0-based effect index in the stack.
+            frame: Frame position of the keyframe to remove.
+        """
+        result = self._call("scriptRemoveEffectKeyframe", clip_id,
+                            effect_index, frame)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def update_effect_keyframe(self, clip_id: int, effect_index: int,
+                               old_frame: int, new_frame: int,
+                               value: float = -1.0) -> bool:
+        """Move and/or update a keyframe value.
+
+        Args:
+            clip_id: Timeline clip ID.
+            effect_index: 0-based effect index in the stack.
+            old_frame: Current frame position of the keyframe.
+            new_frame: New frame position (same as old_frame to only change value).
+            value: New normalized value 0.0–1.0 (-1 to keep existing value).
+        """
+        result = self._call("scriptUpdateEffectKeyframe", clip_id,
+                            effect_index, old_frame, new_frame, value)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
     # ── Speed ─────────────────────────────────────────────────────────
 
     def set_clip_speed(self, clip_id: int, speed: float,
                        pitch_compensate: bool = False) -> bool:
         """Set clip speed. speed is percentage: 100=normal, 50=half, 200=double."""
         return bool(self._call("scriptSetClipSpeed", clip_id, speed, pitch_compensate))
+
+    # ── Audio ─────────────────────────────────────────────────────────
+
+    def set_clip_volume(self, clip_id: int, dB: float) -> bool:
+        """Set audio volume (gain) on a timeline clip in dB."""
+        return bool(self._call("scriptSetClipVolume", clip_id, dB))
+
+    def get_clip_volume(self, clip_id: int) -> float:
+        """Get the current audio volume of a timeline clip in dB."""
+        result = self._call("scriptGetClipVolume", clip_id)
+        return float(result) if isinstance(result, str) else result
+
+    def set_audio_fade(self, clip_id: int, fade_in_frames: int, fade_out_frames: int) -> bool:
+        """Set audio fade in/out. Pass -1 to skip a fade."""
+        return bool(self._call("scriptSetAudioFade", clip_id, fade_in_frames, fade_out_frames))
+
+    def set_track_mute(self, track_id: int, mute: bool) -> bool:
+        """Mute or unmute a track."""
+        return bool(self._call("scriptSetTrackMute", track_id, mute))
+
+    def get_track_mute(self, track_id: int) -> bool:
+        """Check if a track is muted."""
+        result = self._call("scriptGetTrackMute", track_id)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def get_audio_levels(self, bin_id: str, stream: int = 0, downsample: int = 1,
+                         mode: int = 0) -> list[float]:
+        """Get normalized audio levels (0.0-1.0) from a media pool clip.
+
+        mode: 0=peak (default), 1=RMS.
+        """
+        result = self._call("scriptGetAudioLevels", bin_id, stream, downsample, mode)
+        if isinstance(result, list):
+            return [float(v) for v in result]
+        return []
 
     # ── Markers & Guides ───────────────────────────────────────────────
 
@@ -575,6 +819,36 @@ class KdenliveDBus:
 
     def delete_guides_by_category(self, category: int) -> bool:
         return bool(self._call("scriptDeleteGuidesByCategory", category))
+
+    # ── Clip Markers ──────────────────────────────────────────────────
+
+    def add_clip_marker(self, bin_id: str, frame: int, comment: str, category: int) -> bool:
+        return bool(self._call("scriptAddClipMarker", bin_id, frame, comment, category))
+
+    def get_clip_markers(self, bin_id: str) -> list[dict]:
+        result = self._call("scriptGetClipMarkers", bin_id)
+        if isinstance(result, str):
+            return []
+        if isinstance(result, list):
+            out = []
+            for m in result:
+                if isinstance(m, dict):
+                    out.append(m)
+                elif isinstance(m, list):
+                    d = {}
+                    for item in m:
+                        if isinstance(item, tuple) and len(item) == 2:
+                            d[item[0]] = item[1]
+                    if d:
+                        out.append(d)
+            return out
+        return []
+
+    def delete_clip_marker(self, bin_id: str, frame: int) -> bool:
+        return bool(self._call("scriptDeleteClipMarker", bin_id, frame))
+
+    def delete_clip_markers_by_category(self, bin_id: str, category: int) -> bool:
+        return bool(self._call("scriptDeleteClipMarkersByCategory", bin_id, category))
 
     # ── Playback & Monitor ─────────────────────────────────────────────
 
@@ -612,7 +886,369 @@ class KdenliveDBus:
             return [float(t) for t in result.split("\n") if t]
         return []
 
+    # ── Fill Frame ─────────────────────────────────────────────────────
+
+    def fill_frame(self, clip_id: int) -> bool:
+        """Scale-to-fill a timeline clip (remove black bars, center crop).
+
+        Reads source resolution via MLT, calculates qtblend rect, applies effect.
+        Returns True on success.
+        """
+        result = self._call("scriptFillFrame", clip_id)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    # ── Preview / Frame Rendering ─────────────────────────────────────
+
+    def render_bin_frame(self, bin_id: str, frame: int, width: int,
+                         height: int, output_path: str) -> str:
+        """Render a single frame from a bin clip to a JPEG file.
+
+        Returns the output path on success, empty string on failure.
+        """
+        result = self._call("scriptRenderBinFrame",
+                            bin_id, frame, width, height, output_path)
+        return result if isinstance(result, str) else ""
+
+    def render_timeline_frame(self, frame: int, width: int,
+                              height: int, output_path: str) -> str:
+        """Render a composited timeline frame to a JPEG file.
+
+        Returns the output path on success, empty string on failure.
+        """
+        result = self._call("scriptRenderTimelineFrame",
+                            frame, width, height, output_path)
+        return result if isinstance(result, str) else ""
+
+    # ── Subtitles ──────────────────────────────────────────────────────
+
+    def get_subtitles(self) -> list[dict]:
+        """Get all subtitles as a list of dicts with id, layer, startFrame, endFrame, text."""
+        result = self._call("scriptGetSubtitles")
+        if isinstance(result, list):
+            out = []
+            for item in result:
+                if isinstance(item, dict):
+                    out.append(item)
+                elif isinstance(item, list):
+                    d = {}
+                    for pair in item:
+                        if isinstance(pair, tuple) and len(pair) == 2:
+                            d[pair[0]] = pair[1]
+                    if d:
+                        out.append(d)
+            return out
+        return []
+
+    def add_subtitle(self, start_frame: int, end_frame: int, text: str,
+                     layer: int = 0) -> int:
+        """Add a subtitle. Returns its ID or -1 on error."""
+        result = self._call("scriptAddSubtitle", start_frame, end_frame, text, layer)
+        return int(result) if isinstance(result, str) else result
+
+    def edit_subtitle(self, subtitle_id: int, new_text: str) -> bool:
+        """Edit subtitle text by ID."""
+        result = self._call("scriptEditSubtitle", subtitle_id, new_text)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def delete_subtitle(self, subtitle_id: int) -> bool:
+        """Delete a subtitle by ID."""
+        result = self._call("scriptDeleteSubtitle", subtitle_id)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def export_subtitles(self, file_path: str) -> bool:
+        """Export subtitles to an .ass file. Returns True on success."""
+        result = self._call("scriptExportSubtitles", file_path)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    # ── Subtitle Styles ───────────────────────────────────────────────
+
+    def get_subtitle_styles(self, global_styles: bool = False) -> list[dict]:
+        """Get all subtitle styles as a list of dicts.
+
+        Args:
+            global_styles: If True, return global styles; otherwise local (project) styles.
+        """
+        result = self._call("scriptGetSubtitleStyles", global_styles)
+        if isinstance(result, list):
+            out = []
+            for item in result:
+                if isinstance(item, dict):
+                    out.append(item)
+                elif isinstance(item, list):
+                    d = {}
+                    for pair in item:
+                        if isinstance(pair, tuple) and len(pair) == 2:
+                            d[pair[0]] = pair[1]
+                    if d:
+                        out.append(d)
+            return out
+        return []
+
+    def set_subtitle_style(self, name: str, params: dict,
+                           global_style: bool = False) -> bool:
+        """Create or update a subtitle style.
+
+        Args:
+            name: Style name (e.g. "Default", "Accent").
+            params: Dict of style properties (camelCase keys matching C++ property names).
+            global_style: If True, modify global styles; otherwise local.
+        """
+        keys = list(params.keys())
+        values = [str(v) for v in params.values()]
+        result = self._call("scriptSetSubtitleStyle", name, keys, values, global_style)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def delete_subtitle_style(self, name: str,
+                              global_style: bool = False) -> bool:
+        """Delete a subtitle style. Cannot delete 'Default'."""
+        result = self._call("scriptDeleteSubtitleStyle", name, global_style)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def set_subtitle_style_name(self, subtitle_id: int,
+                                style_name: str) -> bool:
+        """Assign a named style to a subtitle event."""
+        result = self._call("scriptSetSubtitleStyleName", subtitle_id, style_name)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    # ── Groups ─────────────────────────────────────────────────────────
+
+    def group_clips(self, item_ids: list[int]) -> int:
+        """Group timeline items (clips/compositions).
+
+        Args:
+            item_ids: List of timeline item IDs to group (minimum 2).
+
+        Returns:
+            Group ID on success, -1 on failure.
+        """
+        result = self._call("scriptGroupClips", item_ids)
+        return int(result) if isinstance(result, str) else result
+
+    def ungroup_clips(self, item_id: int) -> bool:
+        """Ungroup the topmost group containing the given item.
+
+        All members are released from the group.
+        """
+        result = self._call("scriptUngroupClips", item_id)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def get_group_info(self, item_id: int) -> dict:
+        """Get group information for a timeline item.
+
+        Returns dict with keys: isInGroup, isGroup, rootId, groupType,
+        members (list of {id, type, trackId, position}).
+        """
+        result = self._call("scriptGetGroupInfo", item_id)
+        return self._result_to_dict(result)
+
+    def remove_from_group(self, item_id: int) -> bool:
+        """Remove a single item from its group, keeping the rest grouped."""
+        result = self._call("scriptRemoveFromGroup", item_id)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    # ── Zones (timeline in/out points) ────────────────────────────────
+
+    def get_zone(self) -> dict:
+        """Get the current timeline zone (in/out points).
+
+        Returns dict with keys: zoneIn, zoneOut (frame numbers).
+        """
+        result = self._call("scriptGetZone")
+        return self._result_to_dict(result)
+
+    def set_zone(self, in_frame: int, out_frame: int) -> bool:
+        """Set the timeline zone (in/out points)."""
+        result = self._call("scriptSetZone", in_frame, out_frame)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def set_zone_in(self, in_frame: int) -> bool:
+        """Set the timeline zone in-point only."""
+        result = self._call("scriptSetZoneIn", in_frame)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def set_zone_out(self, out_frame: int) -> bool:
+        """Set the timeline zone out-point only."""
+        result = self._call("scriptSetZoneOut", out_frame)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def extract_zone(self, in_frame: int, out_frame: int,
+                     lift_only: bool = False) -> bool:
+        """Extract (remove) content in the given zone.
+
+        Args:
+            in_frame: Zone start frame.
+            out_frame: Zone end frame.
+            lift_only: If True, lifts without ripple (leaves gap).
+                       If False, ripple deletes (closes gap).
+        """
+        result = self._call("scriptExtractZone", in_frame, out_frame, lift_only)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    # ── Sequences (multi-timeline) ────────────────────────────────────
+
+    def get_sequences(self) -> list[dict]:
+        """Get all sequences in the project.
+
+        Returns list of dicts with keys: uuid, name, duration, tracks, active.
+        """
+        result = self._call("scriptGetSequences")
+        if isinstance(result, list):
+            out = []
+            for item in result:
+                if isinstance(item, dict):
+                    out.append(item)
+                elif isinstance(item, list):
+                    d = {}
+                    for pair in item:
+                        if isinstance(pair, tuple) and len(pair) == 2:
+                            d[pair[0]] = pair[1]
+                    if d:
+                        out.append(d)
+            return out
+        return []
+
+    def get_active_sequence(self) -> dict:
+        """Get info about the currently active sequence.
+
+        Returns dict with keys: uuid, name, duration, tracks.
+        """
+        result = self._call("scriptGetActiveSequence")
+        if isinstance(result, dict):
+            return result
+        if isinstance(result, list):
+            d = {}
+            for pair in result:
+                if isinstance(pair, tuple) and len(pair) == 2:
+                    d[pair[0]] = pair[1]
+            return d
+        return {}
+
+    def set_active_sequence(self, uuid: str) -> bool:
+        """Switch to a sequence by its UUID.
+
+        Args:
+            uuid: Sequence UUID string (without braces).
+        """
+        result = self._call("scriptSetActiveSequence", uuid)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    # ── Proxy Clips ────────────────────────────────────────────────────
+
+    def get_clip_proxy_status(self, bin_id: str) -> dict:
+        """Get proxy status for a bin clip.
+
+        Returns dict with keys: supportsProxy, hasProxy, proxyPath,
+        originalUrl, isGenerating.
+        """
+        result = self._call("scriptGetClipProxyStatus", bin_id)
+        return self._result_to_dict(result)
+
+    def set_clip_proxy(self, bin_id: str, enabled: bool) -> bool:
+        """Enable or disable proxy for a bin clip."""
+        result = self._call("scriptSetClipProxy", bin_id, enabled)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def delete_clip_proxy(self, bin_id: str) -> bool:
+        """Delete proxy file and disable proxy for a bin clip."""
+        result = self._call("scriptDeleteClipProxy", bin_id)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def rebuild_clip_proxy(self, bin_id: str) -> bool:
+        """Force regenerate proxy for a bin clip."""
+        result = self._call("scriptRebuildClipProxy", bin_id)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
     # ── Render ─────────────────────────────────────────────────────────
 
     def render(self, url: str) -> None:
         self._call("scriptRender", url)
+
+    # ── Selection ─────────────────────────────────────────────────────
+
+    def get_selection(self) -> list[int]:
+        """Get currently selected timeline item IDs."""
+        result = self._call("scriptGetSelection")
+        if not result:
+            return []
+        # Result is a list of ID values (as strings from D-Bus)
+        if isinstance(result, list):
+            return [int(x) for x in result if isinstance(x, (int, str)) and str(x).lstrip('-').isdigit()]
+        return []
+
+    def set_selection(self, ids: list[int]) -> bool:
+        """Set selection to the given timeline item IDs."""
+        if not ids:
+            return self.clear_selection()
+        result = self._call("scriptSetSelection", ids)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def add_to_selection(self, item_id: int, clear: bool = False) -> bool:
+        """Add an item to the selection. If clear=True, replaces current selection."""
+        result = self._call("scriptAddToSelection", item_id, clear)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def clear_selection(self) -> bool:
+        """Clear the current selection."""
+        result = self._call("scriptClearSelection")
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def select_all(self) -> bool:
+        """Select all clips, compositions, and subtitles on the timeline."""
+        result = self._call("scriptSelectAll")
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def select_current_track(self) -> bool:
+        """Select all items on the currently active track."""
+        result = self._call("scriptSelectCurrentTrack")
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)
+
+    def select_items_in_range(self, track_ids: list[int], start_frame: int, end_frame: int) -> bool:
+        """Select items within a frame range on specified tracks."""
+        result = self._call("scriptSelectItems", track_ids, start_frame, end_frame)
+        if isinstance(result, str):
+            return result.lower() == "true"
+        return bool(result)

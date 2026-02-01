@@ -55,10 +55,9 @@ All class and method names follow the DaVinci Resolve Scripting API naming conve
 - Linux (D-Bus transport requires `pydbus` and `PyGObject`)
 - [Modified Kdenlive build](https://github.com/D-Ogi/kdenlive) with D-Bus scripting support
 
-## Docs
+## Documentation
 
-- [API reference](docs/kdenlive-api.md) — full class/method documentation
-- [MoSCoW priorities](docs/mcp-kdenlive-moscow.md) — feature prioritization
+See the source code and docstrings for API documentation.
 
 ## Tests
 

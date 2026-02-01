@@ -23,8 +23,8 @@ def test_project_fps(mock_dbus):
 def test_project_resolution(mock_dbus):
     project = Project(mock_dbus)
     w, h = project.GetResolution()
-    assert w == 1536
-    assert h == 864
+    assert w == 1920
+    assert h == 1080
 
 
 def test_project_settings(mock_dbus):

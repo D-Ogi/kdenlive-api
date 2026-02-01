@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build a complete 38-scene music video timeline in Kdenlive.
+"""Build a complete scene-based video timeline in Kdenlive.
 
 Usage:
-    python scripts/build_timeline.py [--video-dir OUTPUT/VIDEO] [--audio PATH]
+    python scripts/build_timeline.py --video-dir PATH [--audio PATH]
                                       [--variant A] [--transition-frames 13]
+                                      [--num-scenes N] [--script PATH]
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from kdenlive_api.constants import (
     MARKER_BLUE,
     MARKER_GREEN,
     MARKER_PURPLE,
-    SCENE_DURATION_FRAMES,
+    DEFAULT_CLIP_DURATION_FRAMES,
 )
 from kdenlive_api.utils import (
     collect_scene_videos,
@@ -36,8 +37,9 @@ def build_timeline(
     variant: str = "A",
     transition_frames: int = DEFAULT_MIX_DURATION,
     script_path: str | None = None,
+    num_scenes: int | None = None,
 ):
-    """Build the full music video timeline.
+    """Build a video timeline from numbered scene clips.
 
     Steps:
         1. Connect to running Kdenlive via D-Bus
@@ -48,7 +50,7 @@ def build_timeline(
         6. Add guide markers for each scene
         7. Print summary
     """
-    # ── Connect ────────────────────────────────────────────────────────
+    # -- Connect ---------------------------------------------------------
     resolve = Resolve()
     pm = resolve.GetProjectManager()
     project = pm.GetCurrentProject()
@@ -58,24 +60,38 @@ def build_timeline(
     fps = project.GetFps()
     print(f"Connected to project: {project.GetName()} ({fps} fps)")
 
-    # ── Parse script for scene metadata ────────────────────────────────
-    if script_path is None:
-        # kdenlive-api/scripts/ → repo root → mv/script-scenes.md
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        script_path = os.path.join(repo_root, "mv", "script-scenes.md")
-    scenes_meta = parse_script_scenes(script_path) if os.path.exists(script_path) else []
+    # -- Parse script for scene metadata ---------------------------------
+    scenes_meta = []
+    if script_path and os.path.exists(script_path):
+        scenes_meta = parse_script_scenes(script_path)
 
-    # ── Collect scene video files ──────────────────────────────────────
-    video_files = collect_scene_videos(video_dir, num_scenes=38, variant=variant)
+    # -- Determine scene count -------------------------------------------
+    if num_scenes is None:
+        # Auto-detect from script metadata or video directory
+        if scenes_meta:
+            num_scenes = max(s["number"] for s in scenes_meta)
+        else:
+            # Count scene files in directory
+            import glob as globmod
+            matches = globmod.glob(os.path.join(video_dir, f"scene*-{variant}*.mp4"))
+            if matches:
+                num_scenes = len(matches)
+            else:
+                print("ERROR: Cannot determine scene count. Use --num-scenes.")
+                sys.exit(1)
+        print(f"Auto-detected {num_scenes} scenes")
+
+    # -- Collect scene video files ---------------------------------------
+    video_files = collect_scene_videos(video_dir, num_scenes=num_scenes, variant=variant)
     available = [(i, f) for i, f in enumerate(video_files) if f is not None]
-    print(f"Found {len(available)}/38 scene videos (variant {variant})")
+    print(f"Found {len(available)}/{num_scenes} scene videos (variant {variant})")
 
     if not available:
         print("ERROR: No scene videos found. Check --video-dir path.")
         sys.exit(1)
 
-    # ── Create bin folder and import ───────────────────────────────────
-    folder = pool.AddSubFolder(None, f"MV Scenes ({variant})")
+    # -- Create bin folder and import ------------------------------------
+    folder = pool.AddSubFolder(None, f"Scenes ({variant})")
     paths = [f for _, f in available]
     clips = pool.ImportMedia(paths, folder)
     print(f"Imported {len(clips)} clips into bin")
@@ -85,7 +101,7 @@ def build_timeline(
     for (idx, _path), clip in zip(available, clips):
         scene_clips[idx] = clip
 
-    # ── Import audio track ─────────────────────────────────────────────
+    # -- Import audio track ----------------------------------------------
     if audio_path and os.path.exists(audio_path):
         audio_clips = pool.ImportMedia([os.path.abspath(audio_path)])
         if audio_clips:
@@ -95,7 +111,7 @@ def build_timeline(
         if audio_path:
             print(f"WARNING: Audio file not found: {audio_path}")
 
-    # ── Get track info ─────────────────────────────────────────────────
+    # -- Get track info --------------------------------------------------
     tracks = timeline.GetAllTracksInfo()
     video_tracks = [t for t in tracks if not t.get("audio", True)]
     audio_tracks = [t for t in tracks if t.get("audio", False)]
@@ -109,14 +125,14 @@ def build_timeline(
     video_track_id = video_tracks[0].get("id", 0)
     print(f"Using video track ID: {video_track_id}")
 
-    # ── Insert clips sequentially ──────────────────────────────────────
+    # -- Insert clips sequentially ---------------------------------------
     position = 0
     timeline_items = []
 
-    for idx in range(38):
+    for idx in range(num_scenes):
         if idx not in scene_clips:
-            print(f"  Scene {idx + 1:02d}: MISSING — skipping")
-            position += SCENE_DURATION_FRAMES
+            print(f"  Scene {idx + 1:02d}: MISSING -- skipping")
+            position += DEFAULT_CLIP_DURATION_FRAMES
             continue
 
         clip = scene_clips[idx]
@@ -129,11 +145,11 @@ def build_timeline(
             position += duration
         else:
             print(f"  Scene {idx + 1:02d}: INSERT FAILED")
-            position += SCENE_DURATION_FRAMES
+            position += DEFAULT_CLIP_DURATION_FRAMES
 
     print(f"Total timeline duration: {frames_to_timecode(position, fps)}")
 
-    # ── Insert audio on audio track ────────────────────────────────────
+    # -- Insert audio on audio track -------------------------------------
     if audio_clips and audio_tracks:
         audio_track_id = audio_tracks[0].get("id", 0)
         audio_item = timeline.InsertClip(
@@ -142,7 +158,7 @@ def build_timeline(
         if audio_item:
             print(f"Audio inserted on track {audio_track_id}")
 
-    # ── Add transitions (same-track mixes) ─────────────────────────────
+    # -- Add transitions (same-track mixes) ------------------------------
     if transition_frames > 0 and len(timeline_items) >= 2:
         mix_count = 0
         for i in range(len(timeline_items) - 1):
@@ -152,15 +168,15 @@ def build_timeline(
                 mix_count += 1
         print(f"Added {mix_count} transitions ({transition_frames} frames each)")
 
-    # ── Add guide markers per scene ────────────────────────────────────
+    # -- Add guide markers per scene -------------------------------------
     pos = 0
     marker_count = 0
-    for idx in range(38):
+    for idx in range(num_scenes):
         # Find scene metadata
         meta = next((s for s in scenes_meta if s["number"] == idx + 1), None)
         label = f"Scene {idx + 1:02d}"
         if meta:
-            label += f" — {meta['title']}"
+            label += f" -- {meta['title']}"
 
         # Color by section
         category = MARKER_PURPLE
@@ -184,39 +200,36 @@ def build_timeline(
             if clip_info:
                 pos += clip_info.GetDuration()
             else:
-                pos += SCENE_DURATION_FRAMES
+                pos += DEFAULT_CLIP_DURATION_FRAMES
         else:
-            pos += SCENE_DURATION_FRAMES
+            pos += DEFAULT_CLIP_DURATION_FRAMES
 
     print(f"Added {marker_count} guide markers")
 
-    # ── Summary ────────────────────────────────────────────────────────
-    print("\n── Timeline Summary ──")
+    # -- Summary ---------------------------------------------------------
+    print("\n-- Timeline Summary --")
     timeline.PrintSummary()
     print("Done!")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build music video timeline in Kdenlive"
+        description="Build a scene-based video timeline in Kdenlive"
     )
     parser.add_argument(
         "--video-dir",
-        default=os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "mv", "output", "video",
-        ),
-        help="Directory containing scene MP4 files",
+        required=True,
+        help="Directory containing scene MP4 files (e.g. scene01-A.mp4)",
     )
     parser.add_argument(
         "--audio",
         default=None,
-        help="Path to the audio/music file",
+        help="Path to the audio file",
     )
     parser.add_argument(
         "--variant",
         default="A",
-        help="Scene variant to use (A or B)",
+        help="Scene variant to use (default: A)",
     )
     parser.add_argument(
         "--transition-frames",
@@ -227,7 +240,13 @@ def main():
     parser.add_argument(
         "--script",
         default=None,
-        help="Path to script-scenes.md",
+        help="Path to script-scenes.md for scene metadata",
+    )
+    parser.add_argument(
+        "--num-scenes",
+        type=int,
+        default=None,
+        help="Number of scenes (auto-detected from script or directory if omitted)",
     )
 
     args = parser.parse_args()
@@ -237,6 +256,7 @@ def main():
         variant=args.variant,
         transition_frames=args.transition_frames,
         script_path=args.script,
+        num_scenes=args.num_scenes,
     )
 
 
