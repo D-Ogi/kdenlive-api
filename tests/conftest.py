@@ -17,8 +17,8 @@ class MockDBus:
         self._project_name = "Test Project"
         self._project_path = "/tmp/test.kdenlive"
         self._fps = 25.0
-        self._width = 1536
-        self._height = 864
+        self._width = 1920
+        self._height = 1080
         self._clips = {}
         self._folders = {}
         self._timeline_clips = {}

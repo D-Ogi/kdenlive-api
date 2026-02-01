@@ -22,7 +22,7 @@ from kdenlive_api.constants import (
     MARKER_BLUE,
     MARKER_GREEN,
     MARKER_PURPLE,
-    SCENE_DURATION_FRAMES,
+    DEFAULT_CLIP_DURATION_FRAMES,
 )
 from kdenlive_api.utils import (
     collect_scene_videos,
@@ -132,7 +132,7 @@ def build_timeline(
     for idx in range(num_scenes):
         if idx not in scene_clips:
             print(f"  Scene {idx + 1:02d}: MISSING -- skipping")
-            position += SCENE_DURATION_FRAMES
+            position += DEFAULT_CLIP_DURATION_FRAMES
             continue
 
         clip = scene_clips[idx]
@@ -145,7 +145,7 @@ def build_timeline(
             position += duration
         else:
             print(f"  Scene {idx + 1:02d}: INSERT FAILED")
-            position += SCENE_DURATION_FRAMES
+            position += DEFAULT_CLIP_DURATION_FRAMES
 
     print(f"Total timeline duration: {frames_to_timecode(position, fps)}")
 
@@ -200,9 +200,9 @@ def build_timeline(
             if clip_info:
                 pos += clip_info.GetDuration()
             else:
-                pos += SCENE_DURATION_FRAMES
+                pos += DEFAULT_CLIP_DURATION_FRAMES
         else:
-            pos += SCENE_DURATION_FRAMES
+            pos += DEFAULT_CLIP_DURATION_FRAMES
 
     print(f"Added {marker_count} guide markers")
 

@@ -51,16 +51,16 @@ MARKER_CATEGORY_TO_COLOR = {
     MARKER_RED: "Red",
 }
 
-# Scene duration at 25 fps (5 seconds)
-SCENE_DURATION_FRAMES = 125
+# Default clip duration (5 seconds at 25fps)
+DEFAULT_CLIP_DURATION_FRAMES = 125
 
 # Default transition duration (frames at 25 fps)
 DEFAULT_MIX_DURATION = 13  # ~0.5s
 
-# Project defaults
+# Project defaults (Full HD)
 DEFAULT_FPS = 25.0
-DEFAULT_WIDTH = 1536
-DEFAULT_HEIGHT = 864
+DEFAULT_WIDTH = 1920
+DEFAULT_HEIGHT = 1080
 
 # ── Resolve Export Type constants ──────────────────────────────────────
 # Used by timeline.Export() and resolve.EXPORT_* attributes

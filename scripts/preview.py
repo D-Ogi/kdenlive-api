@@ -53,7 +53,7 @@ def preview_scene(scene_number: int | None = None,
 
 def main():
     parser = argparse.ArgumentParser(description="Preview timeline in Kdenlive")
-    parser.add_argument("--scene", type=int, default=None, help="Scene number (1-38)")
+    parser.add_argument("--scene", type=int, default=None, help="Scene number (1-based)")
     parser.add_argument("--frame", type=int, default=None, help="Frame number")
     parser.add_argument("--track", type=int, default=0, help="Video track index")
     parser.add_argument("--no-play", action="store_true", help="Don't auto-play")
