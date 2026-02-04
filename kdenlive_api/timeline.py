@@ -154,6 +154,10 @@ class Timeline:
         """Add a new track. Returns track ID."""
         return self._dbus.add_track(name, audio)
 
+    def DeleteTrack(self, track_id: int) -> bool:
+        """Delete a track by ID. Returns True on success."""
+        return self._dbus.delete_track(track_id)
+
     def InsertClip(self, bin_clip_id: str, track_id: int,
                    position: int) -> TimelineItem | None:
         """Insert a bin clip into the timeline at the given position."""
